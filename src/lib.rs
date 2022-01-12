@@ -6,20 +6,27 @@
 //! 
 //! This is not a production level implementation and does not work
 //! with different allocators
+use std::marker::PhantomData;
 use std::alloc::{self, Layout};
-use std::ptr::NonNull;
+use std::ptr;
 use std::fmt;
 
 struct Node<T> {
     data : T,
-    next_ptr : NonNull<Node<T>>,
-    prev_ptr : NonNull<Node<T>>
+    next_ptr : *mut Node<T>,
+    prev_ptr : *mut Node<T>
+}
+
+impl<T> Drop for Node<T> {
+    fn drop(&mut self) {
+        println!("node has been dropped") 
+    }
 }
 
 pub struct DoubleList<T> 
     where T : fmt::Display
 {
-    head : NonNull<Node<T>>,
+    head : *mut Node<T>,
 }
 
 impl<T> DoubleList<T> 
@@ -27,7 +34,7 @@ impl<T> DoubleList<T>
 {
     pub fn new() -> Self {
         DoubleList {
-            head : NonNull::dangling(),
+            head : ptr::null_mut(),
         }
     }
 
@@ -37,17 +44,20 @@ impl<T> DoubleList<T>
         let node = unsafe {
             DoubleList::create_node(new_data)
         };
-        
+
+        println!("New node: {:p}", node);
+
         // in case the head is dangling, set the new node as the head
         // make it circular on itself
-        if self.head == NonNull::dangling() {
+        if self.head == ptr::null_mut() {
             self.head = node;
 
             unsafe {
                 // we need to change the next / prev to point to the head it self
-                let mut head_ptr = self.head.as_ptr();
-                (*head_ptr).next_ptr = NonNull::new_unchecked(head_ptr);
-                (*head_ptr).prev_ptr = NonNull::new_unchecked(head_ptr);
+                (*node).next_ptr = node;
+                (*node).prev_ptr = node;
+
+                println!("head: {:p}, next: {:p}, prev: {:p}", self.head, (*self.head).next_ptr, (*self.head).prev_ptr);
             }
         }
         else {
@@ -57,35 +67,35 @@ impl<T> DoubleList<T>
             // head->prev = new
             // new->next = head
             unsafe {
-                let node_ptr = node.as_ptr();
-                let head_ptr = self.head.as_ptr();
+                let tail = (*self.head).prev_ptr;
 
                 // new node's prev will be head's prev
-                (*node_ptr).prev_ptr = NonNull::new_unchecked((*head_ptr).prev_ptr.as_ptr());
-                
+                (*node).prev_ptr = (*self.head).prev_ptr;
+
                 // tails's next is going to be this new node
-                let tail = (*head_ptr).prev_ptr;
-                (*tail.as_ptr()).next_ptr = NonNull::new_unchecked(node_ptr);
+                (*tail).next_ptr = node;
 
                 // head's prev will be new node
-                (*head_ptr).prev_ptr = NonNull::new_unchecked(node_ptr);
+                (*self.head).prev_ptr = node;
                 
                 // new node's next will be head
-                (*node_ptr).next_ptr = NonNull::new_unchecked(head_ptr);
+                (*node).next_ptr = self.head;
 
                 // head will change
                 self.head = node;
+                
+                println!("head: {:p}, next: {:p}, prev: {:p}", self.head, (*self.head).next_ptr, (*self.head).prev_ptr);
             }
         }
     }
 
     /// returns an iterator on the elements
     pub fn iter(&self) -> ListIterator<'_, T> {
-        ListIterator::new(&self.head)
+        ListIterator::new(self.head)
     }
 
     // creates a new node with the given element
-    unsafe fn create_node(value : T) -> NonNull<Node<T>> {
+    unsafe fn create_node(value : T) -> *mut Node<T> {
         let layout = Layout::for_value(&value);
 
         // allocate memory that can hold the layout of T (T's size and Alignment)
@@ -93,29 +103,29 @@ impl<T> DoubleList<T>
         let node_ptr = ptr as *mut Node<T>;
 
         (*node_ptr).data = value;
-        (*node_ptr).next_ptr = NonNull::dangling();
-        (*node_ptr).prev_ptr = NonNull::dangling();
+        (*node_ptr).next_ptr = ptr::null_mut();
+        (*node_ptr).prev_ptr = ptr::null_mut();
 
-        // create a NonNull node from the raw pointer
-        let node = match NonNull::new(node_ptr) {
-            Some(ptr) => ptr,
-            None => alloc::handle_alloc_error(layout)   // this is what Box does in its implementation
-        };
+        // // create a NonNull node from the raw pointer
+        // let node = match NonNull::new(node_ptr) {
+        //     Some(ptr) => ptr,
+        //     None => alloc::handle_alloc_error(layout)   // this is what Box does in its implementation
+        // };
 
-        node
+        node_ptr
     }
 
     pub fn print(&self, len : i32) {
-        let mut head = &self.head;
+        let mut current : *const Node<T> = self.head;
+
         for i in 0..len {
-            let ptr = head.as_ptr();
             let value = unsafe {
-                &(*ptr).data
+                &(*current).data
             };
-            println!("{}", value);
 
             unsafe {
-                head = &(*head.as_ptr()).next_ptr;
+                println!("value: {}, node: {:p}, next: {:p},", value, current, (*current).next_ptr);
+                current = (*current).next_ptr;
             }
         }
     }
@@ -128,21 +138,21 @@ impl<T> Drop for DoubleList<T>
 {
     fn drop(&mut self) { 
         // an empty list?
-        if self.head == NonNull::dangling() {
+        if self.head == ptr::null_mut() {
             return;
         }
 
         // keep deleting each node till we reach the head node back again
         // even though we would have deleted the head by the time we will
         // reach to it but the pointer address is what we would be checking
-        let end_ptr = self.head.as_ptr();
-        let mut current = self.head.as_ptr();
+        let end_ptr = self.head;
+        let mut current = self.head;
         let layout = Layout::new::<T>();
         
         unsafe {
             loop {
                 // remember the next before deleting the current node
-                let next = ((*current).next_ptr).as_ptr();
+                let next = (*current).next_ptr;
                 // dealloc the memory for the current node
                 alloc::dealloc(current.cast(), layout);
 
@@ -160,27 +170,19 @@ impl<T> Drop for DoubleList<T>
 
 /// Returns an iterator on the list
 pub struct ListIterator<'a, T> {
-    head_ptr : &'a NonNull<Node<T>>,        // for reference to know when we have reached the end of the list
-    iter_ptr : NonNull<Node<T>>,            // the current node that is being visited
+    head_ptr : *const Node<T>,        // for reference to know when we have reached the end of the list
+    iter_ptr : *const Node<T>,        // the current node that is being visited
+    _phantom_data : PhantomData<&'a T>
 }
 
 impl<'a, T> ListIterator<'a, T> {
     // creates a new iterator. For emtpy list the current node
     // is set to dangling
-    fn new(head_ptr : &'a NonNull<Node<T>>) -> Self{
+    fn new(head_ptr : *const Node<T>) -> Self{
         ListIterator {
             head_ptr : head_ptr,
-            iter_ptr : unsafe {
-                // in case the list is empty set the current node being iterated
-                // to dangling
-                if *head_ptr == NonNull::dangling() {
-                    NonNull::dangling()
-                }
-                else {
-                    // use the head as the first element
-                    NonNull::new_unchecked(head_ptr.as_ptr())
-                }
-            }
+            iter_ptr : head_ptr,
+            _phantom_data : PhantomData{}
         }
     }
 }
@@ -191,28 +193,27 @@ impl<'a, T> Iterator for ListIterator<'a, T> {
     fn next(&mut self) -> Option<Self::Item> { 
         // stop in case the iterator is dangling, this would happen
         // in case of empty list AND also when we reach the end of the list
-        if self.iter_ptr == NonNull::dangling() {
+        if self.iter_ptr == ptr::null() {
             return None
         }
         
-        let current : NonNull<Node<T>> = self.iter_ptr;
-        let node_ptr = current.as_ptr();
+        let current = self.iter_ptr;
 
         // get the value to return to the caller
         let value = unsafe {
-            &(*node_ptr).data
+            &(*current).data
         };
 
         // set the next node based on the next link of the node being
         // visited at the moment
         unsafe {
-            let next = (*node_ptr).next_ptr;
+            let next : *const Node<T> = (*current).next_ptr;
             // is next pointing to the location of the head?
-            if next.as_ptr() == (*self.head_ptr).as_ptr() {
-                self.iter_ptr = NonNull::dangling();
+            if next == self.head_ptr {
+                self.iter_ptr = ptr::null();
             }
             else {
-                self.iter_ptr = NonNull::new_unchecked(next.as_ptr());
+                self.iter_ptr = next;
             }
         };
 
