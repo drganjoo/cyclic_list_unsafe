@@ -1,41 +1,46 @@
 //! Double Cirlce Linked List
 //! 
+//! Provides a safe interface to an unsafe implemented double linked list. This
+//! is not a production level implementation and does not work with different 
+//! allocators. It has been written just to see how unsafe code will be implemented.
+//! 
 //! `insert_front` will insert an element at the front of the list
 //! `insert-back` will insert an element at the end of the list
 //! `delete` removes an element from the list
-//! 
-//! This is not a production level implementation and does not work
-//! with different allocators
 use std::marker::PhantomData;
 use std::alloc::{self, Layout};
 use std::ptr;
 use std::fmt;
 
+/// Each node of the linked list has a generic T element
+/// a next and a prev pointer
 struct Node<T> {
     data : T,
     next_ptr : *mut Node<T>,
     prev_ptr : *mut Node<T>
 }
 
-impl<T> Drop for Node<T> {
-    fn drop(&mut self) {
-        println!("node has been dropped") 
-    }
-}
-
+/// A double linked list has a head node. This implementation
+/// does not use an empty head node. The head pointer is set to
+/// ptr::null for an empty list
 pub struct DoubleList<T> 
-    where T : fmt::Display
+    where T : fmt::Display + PartialEq
 {
     head : *mut Node<T>,
 }
 
 impl<T> DoubleList<T> 
-    where T : fmt::Display
+    where T : fmt::Display + PartialEq
 {
     pub fn new() -> Self {
         DoubleList {
             head : ptr::null_mut(),
         }
+    }
+
+    /// is the list empty?
+    pub fn is_empty(&self) -> bool {
+        return self.head == ptr::null_mut();
     }
 
     /// inserts an element at the start of the list
@@ -44,8 +49,6 @@ impl<T> DoubleList<T>
         let node = unsafe {
             DoubleList::create_node(new_data)
         };
-
-        println!("New node: {:p}", node);
 
         // in case the head is dangling, set the new node as the head
         // make it circular on itself
@@ -56,8 +59,6 @@ impl<T> DoubleList<T>
                 // we need to change the next / prev to point to the head it self
                 (*node).next_ptr = node;
                 (*node).prev_ptr = node;
-
-                println!("head: {:p}, next: {:p}, prev: {:p}", self.head, (*self.head).next_ptr, (*self.head).prev_ptr);
             }
         }
         else {
@@ -83,10 +84,38 @@ impl<T> DoubleList<T>
 
                 // head will change
                 self.head = node;
-                
-                println!("head: {:p}, next: {:p}, prev: {:p}", self.head, (*self.head).next_ptr, (*self.head).prev_ptr);
             }
         }
+    }
+
+    /// Deletes an element with value fromt the list. It will remove 
+    /// the first node that has the element. 
+    /// returns false in case the element was not found
+    pub fn delete(&mut self, element : &T) -> bool {
+        if self.head == ptr::null_mut() {
+            return false;
+        }
+
+        let mut cur = self.head;
+        loop {
+            unsafe {
+                let value = &(*cur).data;
+
+                if *value == *element {
+                    self.remove_node(cur);
+                    return true;
+                }
+                else {
+                    cur = (*cur).next_ptr;
+                    // have we cycled hte list?
+                    if cur == self.head {
+                        break;
+                    }
+                }
+            }
+        }
+
+        return false;
     }
 
     /// returns an iterator on the elements
@@ -94,11 +123,40 @@ impl<T> DoubleList<T>
         ListIterator::new(self.head)
     }
 
+    /// returns an iterator on the elements
+    pub fn iter_rev(&self) -> RevListIterator<'_, T> {
+        RevListIterator::new(self.head)
+    }
+
+    /// the node is moved into the parameter so that it cannot
+    /// be used afterwards
+    fn remove_node(&mut self, cur : *mut Node<T>) {
+        unsafe {
+            // is this the only node in the list? if yes 
+            // no need to change any pointers
+            if (*self.head).next_ptr == self.head {
+                self.head = ptr::null_mut();
+            }
+            else {
+                (*(*cur).prev_ptr).next_ptr = (*cur).next_ptr;
+                (*(*cur).next_ptr).prev_ptr = (*cur).prev_ptr;
+
+                // change head in case this is the head node
+                if self.head == cur {
+                    self.head = (*cur).next_ptr;
+                }
+            }
+
+            // remove memory for the node
+            let layout = Layout::new::<Node<T>>();
+            alloc::dealloc(cur.cast(), layout);
+        }
+    }
+    
     // creates a new node with the given element
     unsafe fn create_node(value : T) -> *mut Node<T> {
-        let layout = Layout::for_value(&value);
-
         // allocate memory that can hold the layout of T (T's size and Alignment)
+        let layout = Layout::new::<Node<T>>();
         let ptr = alloc::alloc(layout);
         let node_ptr = ptr as *mut Node<T>;
 
@@ -114,27 +172,12 @@ impl<T> DoubleList<T>
 
         node_ptr
     }
-
-    pub fn print(&self, len : i32) {
-        let mut current : *const Node<T> = self.head;
-
-        for i in 0..len {
-            let value = unsafe {
-                &(*current).data
-            };
-
-            unsafe {
-                println!("value: {}, node: {:p}, next: {:p},", value, current, (*current).next_ptr);
-                current = (*current).next_ptr;
-            }
-        }
-    }
 }
 
 /// Drop implementation to dealloc nodes that were created using
 /// alloc::alloc during the list's life
 impl<T> Drop for DoubleList<T> 
-    where T : fmt::Display
+    where T : fmt::Display + PartialEq
 {
     fn drop(&mut self) { 
         // an empty list?
@@ -221,23 +264,138 @@ impl<'a, T> Iterator for ListIterator<'a, T> {
     }
 }
 
+/// Returns a reverse iterator on the list
+pub struct RevListIterator<'a, T> {
+    tail_ptr : *const Node<T>,        // for reference to know when we have reached the end of the list
+    iter_ptr : *const Node<T>,        // the current node that is being visited
+    _phantom_data : PhantomData<&'a T>
+}
 
-#[test]
-fn list_insert() {
-    let sample = [1,4,43];
+/// A reverse iterator that uses the prev pointer to traverse
+impl<'a, T> RevListIterator<'a, T> {
+    // creates a new iterator. For emtpy list the current node
+    // is set to dangling
+    fn new(head_ptr : *const Node<T>) -> Self{
+        // remember the tail pointer to find out when the list is back on the tail
+        let tail_ptr = if head_ptr == ptr::null() {
+                ptr::null()
+            }
+            else {
+                unsafe {
+                    (*head_ptr).prev_ptr
+                }
+            };
 
-    let mut list : DoubleList<i32> = DoubleList::new();
-    for s in sample {
-        list.insert_front(s);
+        RevListIterator {
+            tail_ptr : tail_ptr,
+            iter_ptr : tail_ptr,
+            _phantom_data : PhantomData{}
+        }
+    }
+}
+
+impl<'a, T> Iterator for RevListIterator<'a, T> {
+    type Item = &'a T;
+    
+    fn next(&mut self) -> Option<Self::Item> { 
+        // stop in case the iterator is dangling, this would happen
+        // in case of empty list AND also when we reach the end of the list
+        if self.iter_ptr == ptr::null() {
+            return None
+        }
+        
+        let current = self.iter_ptr;
+
+        // get the value to return to the caller
+        let value = unsafe {
+            &(*current).data
+        };
+
+        // set the next node based on the next link of the node being
+        // visited at the moment
+        unsafe {
+            let prev : *const Node<T> = (*current).prev_ptr;
+            // is next pointing to the location of the head?
+            if prev == self.tail_ptr {
+                self.iter_ptr = ptr::null();
+            }
+            else {
+                self.iter_ptr = prev;
+            }
+        };
+
+        Some(value)
+    }
+}
+
+#[cfg(test)]
+mod test {
+    #[test]
+    fn list_insert() {
+        let sample = [1,4,43];
+
+        let mut list : crate::DoubleList<i32> = crate::DoubleList::new();
+        for s in sample {
+            list.insert_front(s);
+        }
+
+        test_forward(&sample, &list);
+        test_reverse(&sample, &list);
     }
 
-    list.print(3);
-
-    let mut i = sample.len() - 1;
-    for x in list.iter() {
-        assert_eq!(*x, sample[i]);
-        if i > 0 {
-            i -= 1;
+    fn test_forward<T>(sample : &[T], list : &crate::DoubleList<T>) 
+        where T : std::fmt::Display + std::fmt::Debug + std::cmp::PartialEq
+    {
+        let mut i = sample.len() - 1;
+        for x in list.iter() {
+            assert_eq!(*x, sample[i]);
+            if i > 0 {
+                i -= 1;
+            }
         }
+    }
+
+    fn test_reverse<T>(sample : &[T], list : &crate::DoubleList<T>) 
+        where T : std::fmt::Display + std::fmt::Debug + std::cmp::PartialEq
+    {
+        let mut i = 0;
+        for x in list.iter_rev() {
+            assert_eq!(*x, sample[i]);
+            i += 1;
+        }
+    }
+
+    /// checks if returning a double list from a function works
+    #[test]
+    fn test_ret_from_fn() {
+        let sample = vec![1,4,43, 4, 5, 7, 9, 10, 11];
+        let list = add_to_list(&sample);
+
+        test_forward(&sample, &list);
+        test_reverse(&sample, &list);
+    }
+
+    fn add_to_list(sample : &Vec<i32>) -> crate::DoubleList<i32> {
+        let mut list : crate::DoubleList<i32> = crate::DoubleList::new();
+        for s in sample {
+            list.insert_front(*s);
+        }
+
+        list
+    }
+
+    /// checks if returning a double list from a function works
+    #[test]
+    fn test_delete() {
+        let mut sample = vec![1,4,43, 4, 5, 7, 9, 10, 11];
+        let mut list = add_to_list(&sample);
+        
+        assert_eq!(list.delete(&43), true);
+        assert_eq!(list.delete(&1043), false);
+
+        sample.remove(2);
+
+        test_forward(&sample, &list);
+        test_reverse(&sample, &list);
     }
 }
