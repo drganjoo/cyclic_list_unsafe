@@ -47,6 +47,8 @@ pub struct DoubleList<T>
     head : *mut Node<T>,
 }
 
+/// default implementation of DoubleList<T>, which returns a new
+/// DoubleList
 impl<T> Default for DoubleList<T> 
     where T : fmt::Display + PartialEq
 {
