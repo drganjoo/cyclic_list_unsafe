@@ -47,6 +47,14 @@ pub struct DoubleList<T>
     head : *mut Node<T>,
 }
 
+impl<T> Default for DoubleList<T> 
+    where T : fmt::Display + PartialEq
+{
+    fn default() -> Self {
+        Self::new()
+    }
+}
+       
 impl<T> DoubleList<T> 
     where T : fmt::Display + PartialEq
 {
@@ -58,7 +66,7 @@ impl<T> DoubleList<T>
 
     /// is the list empty?
     pub fn is_empty(&self) -> bool {
-        self.head == ptr::null_mut()
+        self.head.is_null()
     }
 
     /// inserts an element at the start of the list
@@ -70,7 +78,7 @@ impl<T> DoubleList<T>
 
         // in case the head is dangling, set the new node as the head
         // make it circular on itself
-        if self.head == ptr::null_mut() {
+        if self.head.is_null() {
             self.head = node;
 
             unsafe {
@@ -122,7 +130,7 @@ impl<T> DoubleList<T>
 
         // in case the head is dangling, set the new node as the head
         // make it circular on itself
-        if self.head == ptr::null_mut() {
+        if self.head.is_null() {
             self.head = node;
 
             unsafe {
@@ -161,7 +169,7 @@ impl<T> DoubleList<T>
     /// returns false in case the element was not found
     pub fn delete(&mut self, element : &T) -> Result<(), ListError> {
         // can't delete in case the value does not exist
-        if self.head == ptr::null_mut() {
+        if self.head.is_null() {
             return Err(ListError::NodeNotFound);
         }
 
@@ -250,7 +258,7 @@ impl<T> Drop for DoubleList<T>
 {
     fn drop(&mut self) { 
         // an empty list?
-        if self.head == ptr::null_mut() {
+        if self.head.is_null() {
             return;
         }
 
@@ -292,7 +300,7 @@ impl<'a, T> ListIterator<'a, T> {
     // is set to dangling
     fn new(head_ptr : *const Node<T>) -> Self{
         ListIterator {
-            head_ptr : head_ptr,
+            head_ptr,
             iter_ptr : head_ptr,
             _phantom_data : PhantomData{}
         }
@@ -305,7 +313,7 @@ impl<'a, T> Iterator for ListIterator<'a, T> {
     fn next(&mut self) -> Option<Self::Item> { 
         // stop in case the iterator is dangling, this would happen
         // in case of empty list AND also when we reach the end of the list
-        if self.iter_ptr == ptr::null() {
+        if self.iter_ptr.is_null() {
             return None
         }
         
@@ -346,7 +354,7 @@ impl<'a, T> RevListIterator<'a, T> {
     // is set to dangling
     fn new(head_ptr : *const Node<T>) -> Self{
         // remember the tail pointer to find out when the list is back on the tail
-        let tail_ptr = if head_ptr == ptr::null() {
+        let tail_ptr = if head_ptr.is_null() {
                 ptr::null()
             }
             else {
@@ -356,7 +364,7 @@ impl<'a, T> RevListIterator<'a, T> {
             };
 
         RevListIterator {
-            tail_ptr : tail_ptr,
+            tail_ptr,
             iter_ptr : tail_ptr,
             _phantom_data : PhantomData{}
         }
@@ -369,7 +377,7 @@ impl<'a, T> Iterator for RevListIterator<'a, T> {
     fn next(&mut self) -> Option<Self::Item> { 
         // stop in case the iterator is dangling, this would happen
         // in case of empty list AND also when we reach the end of the list
-        if self.iter_ptr == ptr::null() {
+        if self.iter_ptr.is_null() {
             return None
         }
         
