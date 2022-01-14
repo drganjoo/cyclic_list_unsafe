@@ -7,10 +7,28 @@
 //! `insert_front` will insert an element at the front of the list
 //! `insert-back` will insert an element at the end of the list
 //! `delete` removes an element from the list
+use std::fmt::Formatter;
 use std::marker::PhantomData;
 use std::alloc::{self, Layout};
 use std::ptr;
 use std::fmt;
+
+#[derive(Debug)]
+pub enum ListError {
+    NodeNotFound
+}
+
+impl std::error::Error for ListError {}
+
+impl std::fmt::Display for ListError {
+    fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
+        match self {
+            ListError::NodeNotFound => {
+                write!(f, "Value could not be found in the list")
+            }
+        }
+    }
+}
 
 /// Each node of the linked list has a generic T element
 /// a next and a prev pointer
@@ -40,7 +58,7 @@ impl<T> DoubleList<T>
 
     /// is the list empty?
     pub fn is_empty(&self) -> bool {
-        return self.head == ptr::null_mut();
+        self.head == ptr::null_mut()
     }
 
     /// inserts an element at the start of the list
@@ -63,8 +81,8 @@ impl<T> DoubleList<T>
         }
         else {
             // make the new node the head of the list, with:
-            // new->prev = head->prev
-            // head->prev->next = new (tail's next will be the new node)
+            // new->prev = head->prev (tail)
+            // tail->next = new node
             // head->prev = new
             // new->next = head
             unsafe {
@@ -88,12 +106,63 @@ impl<T> DoubleList<T>
         }
     }
 
+    /// removes the nth node from the list
+    /// True in case the item was removed otherwise False
+    pub fn remove(&mut self, _index : i32) -> bool {
+        todo!()
+    }
+
+    /// inserts an element at the back of the list
+    /// inserts an element at the start of the list
+    pub fn insert_back(&mut self, new_data : T) {
+        // create a node with the given element
+        let node = unsafe {
+            DoubleList::create_node(new_data)
+        };
+
+        // in case the head is dangling, set the new node as the head
+        // make it circular on itself
+        if self.head == ptr::null_mut() {
+            self.head = node;
+
+            unsafe {
+                // we need to change the next / prev to point to the head it self
+                (*node).next_ptr = node;
+                (*node).prev_ptr = node;
+            }
+        }
+        else {
+            // make the new node the tail of the list, with:
+            // new->prev = tail
+            // tail->next = new node
+            // head->prev = new node
+            // new->next = head
+            unsafe {
+                let tail = (*self.head).prev_ptr;
+
+                // new node's prev will be the current tail
+                (*node).prev_ptr = tail;
+
+                // tail's next is going to be this new node
+                (*tail).next_ptr = node;
+
+                // head's prev will be new node since this is the new tail
+                (*self.head).prev_ptr = node;
+                
+                // new node's next will be head
+                (*node).next_ptr = self.head;
+            }
+        }
+    }
+
+
     /// Deletes an element with value fromt the list. It will remove 
     /// the first node that has the element. 
     /// returns false in case the element was not found
-    pub fn delete(&mut self, element : &T) -> bool {
+    pub fn delete(&mut self, element : &T) -> Result<(), ListError> {
+        // can't delete in case the value does not exist
         if self.head == ptr::null_mut() {
-            return false;
+            return Err(ListError::NodeNotFound);
         }
 
         let mut cur = self.head;
@@ -103,7 +172,7 @@ impl<T> DoubleList<T>
 
                 if *value == *element {
                     self.remove_node(cur);
-                    return true;
+                    return Ok(());
                 }
                 else {
                     cur = (*cur).next_ptr;
@@ -115,7 +184,7 @@ impl<T> DoubleList<T>
             }
         }
 
-        return false;
+        Err(ListError::NodeNotFound)
     }
 
     /// returns an iterator on the elements
@@ -330,20 +399,45 @@ impl<'a, T> Iterator for RevListIterator<'a, T> {
 
 #[cfg(test)]
 mod test {
+    use rand::Rng;
+
     #[test]
-    fn list_insert() {
-        let sample = [1,4,43];
+    fn test_insert_front() {
+        let sample = vec![1,4,43, 9, 3, 56, 4];
 
         let mut list : crate::DoubleList<i32> = crate::DoubleList::new();
-        for s in sample {
-            list.insert_front(s);
+        for s in &sample {
+            list.insert_front(*s);
         }
 
         test_forward(&sample, &list);
         test_reverse(&sample, &list);
     }
 
-    fn test_forward<T>(sample : &[T], list : &crate::DoubleList<T>) 
+    #[test]
+    fn test_insert_back() {
+        let mut rng = rand::thread_rng();
+        let mut sample : Vec<i32> = Vec::with_capacity(64);
+
+        for _ in 0..64 {
+            let x : i32 = rng.gen();
+            sample.push(x);
+        }
+
+        let mut list : crate::DoubleList<i32> = crate::DoubleList::new();
+        for s in &sample {
+            list.insert_back(*s);
+        }
+
+        // the two functions test_forward and test_reverse were written
+        // from the insert_front angle so we need to reverse the sample list
+        sample.reverse();
+        // test if they match
+        test_forward(&sample, &list);
+        test_reverse(&sample, &list);
+    }
+
+    fn test_forward<T>(sample : &Vec<T>, list : &crate::DoubleList<T>) 
         where T : std::fmt::Display + std::fmt::Debug + std::cmp::PartialEq
     {
         let mut i = sample.len() - 1;
@@ -355,7 +449,7 @@ mod test {
         }
     }
 
-    fn test_reverse<T>(sample : &[T], list : &crate::DoubleList<T>) 
+    fn test_reverse<T>(sample : &Vec<T>, list : &crate::DoubleList<T>) 
         where T : std::fmt::Display + std::fmt::Debug + std::cmp::PartialEq
     {
         let mut i = 0;
@@ -390,8 +484,8 @@ mod test {
         let mut sample = vec![1,4,43, 4, 5, 7, 9, 10, 11];
         let mut list = add_to_list(&sample);
         
-        assert_eq!(list.delete(&43), true);
-        assert_eq!(list.delete(&1043), false);
+        assert!(list.delete(&43).is_ok(), "delete could not find node");
+        assert!(list.delete(&1043).is_err(), "delete did not return error");
 
         sample.remove(2);
 
